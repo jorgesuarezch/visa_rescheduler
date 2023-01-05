@@ -6,6 +6,8 @@ import random
 import platform
 import configparser
 from datetime import datetime
+import logging
+
 
 import requests
 from selenium import webdriver
@@ -17,6 +19,19 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
+
+logging.basicConfig(level=logging.INFO)
+
+logFormatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
+rootLogger = logging.getLogger()
+
+fileHandler = logging.FileHandler("visa.log")
+fileHandler.setFormatter(logFormatter)
+rootLogger.addHandler(fileHandler)
+
+consoleHandler = logging.StreamHandler()
+consoleHandler.setFormatter(logFormatter)
+rootLogger.addHandler(consoleHandler)
 
 
 config = configparser.ConfigParser()
@@ -58,18 +73,17 @@ def send_notification(msg):
 
     if SENDGRID_API_KEY:
         message = Mail(
-            from_email=USERNAME,
+            from_email='jorgesuarezch@gmail.com',
             to_emails=USERNAME,
-            subject=msg,
+            subject=msg[:30],
             html_content=msg)
         try:
             sg = SendGridAPIClient(SENDGRID_API_KEY)
-            response = sg.send(message)
-            print(response.status_code)
-            print(response.body)
-            print(response.headers)
+            response = sg.send(message)            
+            logging.info('notification sent via sendgrid')
         except Exception as e:
-            print(e.message)
+            logging.error(e)
+            print(e)
 
     if PUSH_TOKEN:
         url = "https://api.pushover.net/1/messages.json"
@@ -82,10 +96,13 @@ def send_notification(msg):
 
 
 def get_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    
     if LOCAL_USE:
-        dr = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+        dr = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     else:
-        dr = webdriver.Remote(command_executor=HUB_ADDRESS, options=webdriver.ChromeOptions())
+        dr = webdriver.Remote(command_executor=HUB_ADDRESS, options=options)
     return dr
 
 driver = get_driver()
@@ -137,26 +154,33 @@ def do_login_action():
     Wait(driver, 60).until(
         EC.presence_of_element_located((By.XPATH, REGEX_CONTINUE)))
     print("\tlogin successful!")
+    logging.info("\tlogin successful!")    
 
 
-def get_date():
-    driver.get(DATE_URL)
-    if not is_logged_in():
-        login()
-        return get_date()
-    else:
-        content = driver.find_element(By.TAG_NAME, 'pre').text
-        date = json.loads(content)
-        return date
-
-
-def get_time(date):
-    time_url = TIME_URL % date
-    driver.get(time_url)
+def get_json_content(url):
+    driver.get(url)
     content = driver.find_element(By.TAG_NAME, 'pre').text
-    data = json.loads(content)
+
+    return json.loads(content)
+
+def fetch_available_dates(size=5):
+    dates = get_json_content(DATE_URL)
+
+    message = "available dates:" + ', '.join(dates)
+    logging.info(message)
+    print(message)
+
+    return dates[:size]
+
+
+def fetch_available_times(date):
+    data = get_json_content(TIME_URL % date)
     time = data.get("available_times")[-1]
-    print(f"Got time successfully! {date} {time}")
+    
+    message = f"Got time successfully! {date} {time}"
+    logging.info(message)
+    print(message)
+
     return time
 
 
@@ -164,7 +188,7 @@ def reschedule(date):
     global EXIT
     print(f"Starting Reschedule ({date})")
 
-    time = get_time(date)
+    time = fetch_available_times(date)
     driver.get(APPOINTMENT_URL)
 
     data = {
@@ -201,16 +225,21 @@ def is_logged_in():
 
 
 def print_dates(dates):
-    print("Available dates:")
+    print(dates_to_string(dates))
+
+
+def dates_to_string(dates):
+    result = "Available Dates:\n"
     for d in dates:
-        print("%s \t business_day: %s" % (d.get('date'), d.get('business_day')))
-    print()
+        result = result + "%s \t business_day: %s\n" % (d.get('date'), d.get('business_day'))
+    
+    return result
 
-
+    
 last_seen = None
 
 
-def get_available_date(dates):
+def get_early_date(dates):
     global last_seen
 
     def is_earlier(date):
@@ -237,6 +266,11 @@ def push_notification(dates):
     send_notification(msg)
 
 
+def sleep(seconds):
+    logging.info("sleep: %s minutes" % (seconds/60))
+    time.sleep(EXCEPTION_TIME)
+
+
 if __name__ == "__main__":
     login()
     retry_count = 0
@@ -246,37 +280,46 @@ if __name__ == "__main__":
         try:
             print("------------------")
             print(datetime.today())
-            print(f"Retry count: {retry_count}")
+            logging.info(f"Retry count: {retry_count}")
             print()
 
-            dates = get_date()[:5]
-            if not dates:
-              msg = "List is empty"
-              send_notification(msg)
-              EXIT = True
-            print_dates(dates)
-            date = get_available_date(dates)
-            print()
-            print(f"New date: {date}")
-            if date:
-                reschedule(date)
-                push_notification(dates)
+            dates = fetch_available_dates()
 
-            if(EXIT):
-                print("------------------exit")
-                break
+            # the previous call should return a JSON array. When the user is not authenticated an error object is returned
+            if(not is_logged_in()):
+                login()
+                continue
 
             if not dates:
               msg = "List is empty"
               send_notification(msg)
-              #EXIT = True
-              time.sleep(COOLDOWN_TIME)
+              sleep(COOLDOWN_TIME)
+              continue
             else:
-              time.sleep(RETRY_TIME)
+                send_notification("available dates:" + ', '.join(dates))
+            
+            date = get_early_date(dates)
 
-        except:
+            
+            logging.info(f"early date: {date}")
+            
+            if date:
+                send_notification("an early date was found %s" % date)
+                # reschedule(date)
+                # push_notification(dates)
+                EXIT=True
+                break
+            
+            sleep(RETRY_TIME)
+
+        except Exception as e:
+            logging.error(e)
             retry_count += 1
-            time.sleep(EXCEPTION_TIME)
+            sleep(EXCEPTION_TIME)
+    
+
+    logging.info("Closing browser!")
+    driver.close()
 
     if(not EXIT):
         send_notification("HELP! Crashed.")

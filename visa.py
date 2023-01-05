@@ -269,7 +269,7 @@ def push_notification(dates):
 
 def sleep(seconds):
     logging.info("sleep: %s minutes" % (seconds/60))
-    time.sleep(EXCEPTION_TIME)
+    time.sleep(seconds)
 
 
 if __name__ == "__main__":

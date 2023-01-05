@@ -59,8 +59,8 @@ def MY_CONDITION(month, day): return True # No custom condition wanted for the n
 
 STEP_TIME = 0.5  # time between steps (interactions with forms): 0.5 seconds
 RETRY_TIME = 60*10  # wait time between retries/checks for available dates: 10 minutes
-EXCEPTION_TIME = 60*30  # wait time when an exception occurs: 30 minutes
-COOLDOWN_TIME = 60*60  # wait time when temporary banned (empty list): 60 minutes
+EXCEPTION_TIME = 60*15  # wait time when an exception occurs: 30 minutes
+COOLDOWN_TIME = 60*30  # wait time when temporary banned (empty list): 60 minutes
 
 DATE_URL = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/days/{FACILITY_ID}.json?appointments[expedite]=false"
 TIME_URL = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/times/{FACILITY_ID}.json?date=%s&appointments[expedite]=false"
@@ -218,6 +218,7 @@ def reschedule(date):
 
 
 def is_logged_in():
+    driver.get(DATE_URL)
     content = driver.page_source
     if(content.find("error") != -1):
         return False
@@ -272,7 +273,6 @@ def sleep(seconds):
 
 
 if __name__ == "__main__":
-    login()
     retry_count = 0
     while 1:
         if retry_count > 6:
@@ -283,12 +283,10 @@ if __name__ == "__main__":
             logging.info(f"Retry count: {retry_count}")
             print()
 
-            dates = fetch_available_dates()
-
-            # the previous call should return a JSON array. When the user is not authenticated an error object is returned
             if(not is_logged_in()):
                 login()
-                continue
+
+            dates = fetch_available_dates()
 
             if not dates:
               msg = "List is empty"

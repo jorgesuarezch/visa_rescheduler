@@ -72,8 +72,8 @@ EXIT = False
 
 
 def send_notification(msg):
-    print(f"Sending notification: {msg}")
     message = f"{msg}\n{APPOINTMENT_URL}"
+    logging.info(f"Sending notification: {message}")
 
     if SENDGRID_API_KEY:
         mail = Mail(
@@ -178,11 +178,14 @@ def get_json_content(url):
 def fetch_available_dates(size=5):
     dates = get_json_content(DATE_URL)
 
-    message = "available dates:" + ', '.join(dates)
+    message = "available dates: " + ', '.join(transform_dates_into_string_list(dates, size))
     logging.info(message)
     print(message)
 
     return dates[:size]
+
+def transform_dates_into_string_list(dates, size):
+    return list(map(lambda v: v.get('date'), dates[:size]))
 
 
 def fetch_available_times(date):
@@ -306,7 +309,7 @@ if __name__ == "__main__":
               sleep(COOLDOWN_TIME)
               continue
             else:
-                send_notification("available dates:" + ', '.join(dates))
+                send_notification("available dates: " + ', '.join(transform_dates_into_string_list(dates, 5)))
             
             date = get_early_date(dates)
 

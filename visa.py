@@ -20,6 +20,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
+from pushbullet import Pushbullet
+
 logging.basicConfig(level=logging.INFO)
 
 logFormatter = logging.Formatter("%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s")
@@ -45,6 +47,7 @@ COUNTRY_CODE = config['USVISA']['COUNTRY_CODE']
 FACILITY_ID = config['USVISA']['FACILITY_ID']
 
 SENDGRID_API_KEY = config['SENDGRID']['SENDGRID_API_KEY']
+PUSHBULLET_API_KEY = config['PUSHBULLET']['PUSHBULLET_API_KEY']
 PUSH_TOKEN = config['PUSHOVER']['PUSH_TOKEN']
 PUSH_USER = config['PUSHOVER']['PUSH_USER']
 
@@ -70,20 +73,29 @@ EXIT = False
 
 def send_notification(msg):
     print(f"Sending notification: {msg}")
+    message = f"{msg}\n{APPOINTMENT_URL}"
 
     if SENDGRID_API_KEY:
-        message = Mail(
+        mail = Mail(
             from_email='jorgesuarezch@gmail.com',
             to_emails=USERNAME,
             subject=msg[:30],
-            html_content=msg)
+            html_content=message)
         try:
             sg = SendGridAPIClient(SENDGRID_API_KEY)
-            response = sg.send(message)            
+            response = sg.send(mail)            
             logging.info('notification sent via sendgrid')
         except Exception as e:
             logging.error(e)
-            print(e)
+    
+    if PUSHBULLET_API_KEY:
+        try:
+            pb = Pushbullet(PUSHBULLET_API_KEY)
+            response = pb.push_note("Visa Re-Scheduler", f"{msg}\n{APPOINTMENT_URL}")
+            logging.info('notification sent via pushbullet')
+        except Exception as e:
+            logging.error(e)
+        
 
     if PUSH_TOKEN:
         url = "https://api.pushover.net/1/messages.json"

@@ -23,3 +23,7 @@ PUSH_USER = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 [SENDGRID]
 ; Get email notifications via https://sendgrid.com/ (optional)
 SENDGRID_API_KEY = 
+
+[PUSHBULLET]
+; Get push notifications via https://www.pushbullet.com/ (optional)
+PUSHBULLET_API_KEY = 

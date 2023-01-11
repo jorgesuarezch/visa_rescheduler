@@ -45,6 +45,7 @@ SCHEDULE_ID = config['USVISA']['SCHEDULE_ID']
 MY_SCHEDULE_DATE = config['USVISA']['MY_SCHEDULE_DATE']
 COUNTRY_CODE = config['USVISA']['COUNTRY_CODE'] 
 FACILITY_ID = config['USVISA']['FACILITY_ID']
+ASC_FACILITY_ID = config['USVISA']['ASC_FACILITY_ID']
 
 SENDGRID_API_KEY = config['SENDGRID']['SENDGRID_API_KEY']
 PUSHBULLET_API_KEY = config['PUSHBULLET']['PUSHBULLET_API_KEY']
@@ -54,7 +55,7 @@ PUSH_USER = config['PUSHOVER']['PUSH_USER']
 LOCAL_USE = config['CHROMEDRIVER'].getboolean('LOCAL_USE')
 HUB_ADDRESS = config['CHROMEDRIVER']['HUB_ADDRESS']
 
-REGEX_CONTINUE = "//a[contains(text(),'Continuar')]"
+REGEX_CONTINUE = "//a[contains(text(),'Continue')]"
 
 
 # def MY_CONDITION(month, day): return int(month) == 11 and int(day) >= 5
@@ -62,13 +63,13 @@ def MY_CONDITION(month, day): return True # No custom condition wanted for the n
 
 STEP_TIME = 0.5  # time between steps (interactions with forms): 0.5 seconds
 RETRY_TIME = 60*10  # wait time between retries/checks for available dates: 10 minutes
-EXCEPTION_TIME = 60*15  # wait time when an exception occurs: 30 minutes
+EXCEPTION_TIME = 60*15  # wait time when an exception occurs: 15 minutes
 COOLDOWN_TIME = 60*30  # wait time when temporary banned (empty list): 60 minutes
 
+BASE_URL = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment"
 DATE_URL = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/days/{FACILITY_ID}.json?appointments[expedite]=false"
 TIME_URL = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/times/{FACILITY_ID}.json?date=%s&appointments[expedite]=false"
 APPOINTMENT_URL = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment"
-EXIT = False
 
 
 def send_notification(msg):
@@ -198,39 +199,167 @@ def fetch_available_times(date):
 
     return time
 
+def build_payload(consulate_date, consulate_time, asc_date, asc_time):
+    return {
+        "appointments[consulate_appointment][facility_id]": FACILITY_ID,
+        "appointments[consulate_appointment][date]": consulate_date,
+        "appointments[consulate_appointment][time]": consulate_time,
+        "appointments[asc_appointment][facility_id]": ASC_FACILITY_ID,
+        "appointments[asc_appointment][date]": asc_date,
+        "appointments[asc_appointment][time]": asc_time
+    }
 
-def reschedule(date):
-    global EXIT
-    print(f"Starting Reschedule ({date})")
+def parse_date(date):
+    return datetime.strptime(date, "%Y-%m-%d")
 
-    time = fetch_available_times(date)
+def fetch_consulate_dates(current_date):
+    """Return all early potential dates to reschedule"""
+
+    url = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/days/{FACILITY_ID}.json?appointments[expedite]=false"
+    dates = get_json_content(url)
+
+    dates = list(map(lambda d: d.get('date'), dates))
+    dates = list(filter(lambda d: parse_date(d) < parse_date(current_date), dates))
+
+    return dates
+
+def fetch_consulate_times(consulate_date):
+    url = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/times/{FACILITY_ID}.json?date={consulate_date}&appointments[expedite]=false"
+    response = get_json_content(url)
+
+    return response.get("available_times")
+
+
+def fetch_asc_dates(consulate_date, consulate_time):
+    url = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/days/{ASC_FACILITY_ID}.json?appointments[expedite]=false&consulate_id={FACILITY_ID}&consulate_date={consulate_date}&consulate_time={consulate_time}"
+    dates = get_json_content(url)
+
+    current_date = parse_date(consulate_date)
+
+    dates = list(map(lambda d: d.get('date'), dates))
+    dates = list(filter(lambda d: parse_date(d) < current_date, dates))
+
+    return dates
+
+def fetch_asc_times(asc_date, consulate_date, consulate_time):
+    url = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/times/{ASC_FACILITY_ID}.json?appointments[expedite]=false&consulate_id={FACILITY_ID}&consulate_date={consulate_date}&consulate_time={consulate_time}&date={asc_date}"
+    response = get_json_content(url)
+
+    return response.get("available_times")
+
+def get_payload(current_date):
+    consulate_dates = fetch_consulate_dates(current_date)
+
+    if not consulate_dates:
+        """No dates to reschedule"""
+        return None
+
+    send_notification("an early date was found %s" % consulate_dates[0])
+
+    for consulate_date in consulate_dates:
+        consulate_times = fetch_consulate_times(consulate_date)
+
+        if not consulate_times:
+            continue
+
+        consulate_time = consulate_times[-1]
+
+        asc_dates = fetch_asc_dates(consulate_date, consulate_time)
+
+        if not asc_dates:
+            continue
+        
+        
+        # pick the closest date to the consulate date. 
+        # Note: it is assumed dates are sorted asc
+        asc_date = asc_dates[-1]
+
+        asc_times = fetch_asc_times(asc_date, consulate_date, consulate_time)
+
+        if not asc_times:
+            continue
+
+        asc_time = asc_times[-1]
+
+        
+
+        return {
+            'consulate_date': consulate_date,
+            'consulate_time': consulate_time,
+            'asc_date': asc_date,
+            'asc_time': asc_time,
+        }
+        # return build_payload(consulate_date, consulate_time, asc_date, asc_time)
+
+
+
+def reschedule(payload):
+    logging.info(f"Starting Reschedule ({payload})")
+
     driver.get(APPOINTMENT_URL)
 
-    data = {
-        "utf8": driver.find_element(by=By.NAME, value='utf8').get_attribute('value'),
-        "authenticity_token": driver.find_element(by=By.NAME, value='authenticity_token').get_attribute('value'),
-        "confirmed_limit_message": driver.find_element(by=By.NAME, value='confirmed_limit_message').get_attribute('value'),
-        "use_consulate_appointment_capacity": driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value'),
-        "appointments[consulate_appointment][facility_id]": FACILITY_ID,
-        "appointments[consulate_appointment][date]": date,
-        "appointments[consulate_appointment][time]": time,
+    btn = driver.find_element(By.NAME, 'commit')
+    btn.click()
+
+    Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "appointments[consulate_appointment][facility_id]")))
+
+    driver.execute_script("""
+    async function sleep(ms) {
+        return new Promise(function(resolve, reject){
+            window.setTimeout(function(){resolve(ms)}, ms)
+        })
+    }
+    async function main() {
+        const data = {
+appointments_consulate_appointment_date: '%s',
+appointments_consulate_appointment_time: '%s',
+appointments_asc_appointment_date: '%s',
+appointments_asc_appointment_time: '%s',
+        };
+
+        for(let entry of Object.entries(data)) {
+            const [field, value] = entry
+            const input = document.getElementById(field);
+            input.value = value;
+            input.insertAdjacentHTML('beforebegin', `<input type="text" name='${input.attributes.name}' value='${value}' />`);
+            input.remove()
+
+            // input.dispatchEvent(new Event('change'));
+
+            // await sleep(5000);
+        }
+
+        document.getElementById('appointments_submit').removeAttribute('data-confirm')
+        document.getElementById('appointments_submit').removeAttribute('disabled')
+        document.getElementById('appointments_submit').click();
     }
 
-    headers = {
-        "User-Agent": driver.execute_script("return navigator.userAgent;"),
-        "Referer": APPOINTMENT_URL,
-        "Cookie": "_yatri_session=" + driver.get_cookie("_yatri_session")["value"]
-    }
+    main()
+        
+    """ % (
+        payload.get('consulate_date'),
+        payload.get('consulate_time'),
+        payload.get('asc_date'),
+        payload.get('asc_time')
+        )
+    )
+    time.sleep(1)
 
-    r = requests.post(APPOINTMENT_URL, headers=headers, data=data)
-    if(r.text.find('Successfully Scheduled') != -1):
-        msg = f"Rescheduled Successfully! {date} {time}"
-        send_notification(msg)
-        EXIT = True
+    Wait(driver, 60).until(
+        EC.presence_of_element_located((By.XPATH, "//button[contains(text(),'OK')]")))
+
+    popoup = driver.find_element(By.ID, 'flash_messages')
+
+    if popoup.text.find('could not be scheduled'):
+        send_notification(f"Reschedule failed {payload.get('consulate_date')}")
+
+        return False
+    
     else:
-        msg = f"Reschedule Failed. {date} {time}"
-        send_notification(msg)
+        send_notification(f"Reschedule success {payload.get('consulate_date')}")
 
+    return True
+    
 
 def is_logged_in():
     driver.get(DATE_URL)
@@ -239,49 +368,6 @@ def is_logged_in():
         return False
     return True
 
-
-def print_dates(dates):
-    print(dates_to_string(dates))
-
-
-def dates_to_string(dates):
-    result = "Available Dates:\n"
-    for d in dates:
-        result = result + "%s \t business_day: %s\n" % (d.get('date'), d.get('business_day'))
-    
-    return result
-
-    
-last_seen = None
-
-
-def get_early_date(dates):
-    global last_seen
-
-    def is_earlier(date):
-        my_date = datetime.strptime(MY_SCHEDULE_DATE, "%Y-%m-%d")
-        new_date = datetime.strptime(date, "%Y-%m-%d")
-        result = my_date > new_date
-        print(f'Is {my_date} > {new_date}:\t{result}')
-        return result
-
-    print("Checking for an earlier date:")
-    for d in dates:
-        date = d.get('date')
-        if is_earlier(date) and date != last_seen:
-            _, month, day = date.split('-')
-            if(MY_CONDITION(month, day)):
-                last_seen = date
-                return date
-
-
-def push_notification(dates):
-    msg = "date: "
-    for d in dates:
-        msg = msg + d.get('date') + '; '
-    send_notification(msg)
-
-
 def sleep(seconds):
     logging.info("sleep: %s minutes" % (seconds/60))
     time.sleep(seconds)
@@ -289,40 +375,32 @@ def sleep(seconds):
 
 if __name__ == "__main__":
     retry_count = 0
+    login()
+
     while 1:
-        if retry_count > 6:
+        if retry_count > 10:
+            send_notification("HELP! Crashed.")
             break
         try:
-            print("------------------")
-            print(datetime.today())
-            logging.info(f"Retry count: {retry_count}")
-            print()
+            logging.info(f"Attempt: {retry_count}")
 
-            if(not is_logged_in()):
+            if not is_logged_in():
                 login()
+                continue
+            
+            payload = get_payload(MY_SCHEDULE_DATE)
 
-            dates = fetch_available_dates()
+            if payload:
+                logging.info("Starting reschedule")
+                logging.info(payload)
+                send_notification("Starting reschedule")
 
-            if not dates:
-              msg = "List is empty"
-              send_notification(msg)
-              sleep(COOLDOWN_TIME)
-              continue
-            else:
-                send_notification("available dates: " + ', '.join(transform_dates_into_string_list(dates, 5)))
-            
-            date = get_early_date(dates)
+                was_successful = reschedule(payload)
 
-            
-            logging.info(f"early date: {date}")
-            
-            if date:
-                send_notification("an early date was found %s" % date)
-                # reschedule(date)
-                # push_notification(dates)
-                EXIT=True
-                break
-            
+                if was_successful:
+                    break
+                
+
             sleep(RETRY_TIME)
 
         except Exception as e:
@@ -331,8 +409,8 @@ if __name__ == "__main__":
             sleep(EXCEPTION_TIME)
     
 
-    logging.info("Closing browser!")
-    driver.close()
-
-    if(not EXIT):
-        send_notification("HELP! Crashed.")
+    try:
+        logging.info("Closing browser!")
+        driver.close()
+    except Exception as e:
+        logging.error(e)

@@ -5,7 +5,8 @@ import json
 import random
 import platform
 import configparser
-from datetime import datetime
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 import logging
 
 
@@ -176,19 +177,6 @@ def get_json_content(url):
 
     return json.loads(content)
 
-def fetch_available_dates(size=5):
-    dates = get_json_content(DATE_URL)
-
-    message = "available dates: " + ', '.join(transform_dates_into_string_list(dates, size))
-    logging.info(message)
-    print(message)
-
-    return dates[:size]
-
-def transform_dates_into_string_list(dates, size):
-    return list(map(lambda v: v.get('date'), dates[:size]))
-
-
 def fetch_available_times(date):
     data = get_json_content(TIME_URL % date)
     time = data.get("available_times")[-1]
@@ -215,11 +203,18 @@ def parse_date(date):
 def fetch_consulate_dates(current_date):
     """Return all early potential dates to reschedule"""
 
+    def is_valid_date(d):
+        date = parse_date(d)
+        current = parse_date(current_date)
+        min_date = date.today() + relativedelta(months=+1)
+         
+        return date < current and date > min_date
+
     url = f"https://ais.usvisa-info.com/{COUNTRY_CODE}/niv/schedule/{SCHEDULE_ID}/appointment/days/{FACILITY_ID}.json?appointments[expedite]=false"
     dates = get_json_content(url)
 
     dates = list(map(lambda d: d.get('date'), dates))
-    dates = list(filter(lambda d: parse_date(d) < parse_date(current_date), dates))
+    dates = list(filter(is_valid_date, dates))
 
     return dates
 
